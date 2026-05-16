@@ -11,9 +11,11 @@ const { startWeatherCron, startCleanupCron } = require('./services/weatherServic
 const { calculateDI } = require('./utils/diCalculator');
 const QueryStream = require('pg-query-stream');
 const fastcsv = require('fast-csv');
+const { startDataPruningCron } = require('./services/maintenanceService');
 
 startWeatherCron();
 startCleanupCron();
+startDataPruningCron()
 
 const app = express();
 app.use(cors());
@@ -641,6 +643,25 @@ app.get('/api/exports/leaderboard', verifyToken, requireRole(['admin', 'manager'
   } catch (error) {
     client.release();
     res.status(500).json({ error: 'Failed to generate leaderboard' });
+  }
+});
+
+// --- ENDPOINT: GET TENANT PROFILE (For UI feature flagging) ---
+app.get('/api/tenants/profile', verifyToken, async (req, res) => {
+  const tenant_id = req.user.tenant_id;
+  const client = await pool.connect();
+  
+  try {
+    const query = 'SELECT name, subscription_tier FROM tenants WHERE id = $1';
+    const result = await client.query(query, [tenant_id]);
+    
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Tenant not found' });
+    
+    res.status(200).json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch tenant profile' });
+  } finally {
+    client.release();
   }
 });
 
