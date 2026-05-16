@@ -469,6 +469,12 @@ app.post('/api/users', verifyToken, requireRole(['admin']), async (req, res) => 
 app.delete('/api/users/:uid', verifyToken, requireRole(['admin']), async (req, res) => {
   const targetUid = req.params.uid;
   const tenant_id = req.user.tenant_id;
+
+  // Prevent self-deletion (The Safety Rail)
+  if (targetUid === req.user.uid) {
+    return res.status(400).json({ error: 'Action denied: You cannot delete your own admin account.' });
+  }
+
   const client = await pool.connect();
 
   try {
