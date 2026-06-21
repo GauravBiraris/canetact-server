@@ -68,9 +68,10 @@ app.post('/api/lots/upload', verifyToken, requireRole(['admin', 'manager']), asy
   try {
     await client.query('BEGIN');
 
+    // 1. UPDATED: Added is_ratoon and $7 to the query
     const insertQuery = `
-      INSERT INTO lots (tenant_id, parcha_no, farmer_name, variety_code, harvest_method, burn_status)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO lots (tenant_id, parcha_no, farmer_name, variety_code, harvest_method, burn_status, is_ratoon)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       ON CONFLICT DO NOTHING; 
     `;
 
@@ -79,18 +80,24 @@ app.post('/api/lots/upload', verifyToken, requireRole(['admin', 'manager']), asy
     for (const row of lots) {
       if (!row.parcha_no) continue; // Skip invalid rows
 
-      // Normalize boolean inputs from whatever the CSV had
-      const isBurnt = row.burn_status === 'true' || row.burn_status === true || row.burn_status === 'Y';
+      // Normalize string/boolean inputs from whatever the CSV had
       const method = row.harvest_method ? String(row.harvest_method).toLowerCase() : 'manual';
+      const isBurnt = row.burn_status === 'true' || row.burn_status === true || String(row.burn_status).toUpperCase() === 'Y';
+      
+      // 2. UPDATED: Parse the is_ratoon value safely
+      const isRatoon = row.is_ratoon === 'true' || row.is_ratoon === true || String(row.is_ratoon).toUpperCase() === 'Y';
 
+      // 3. UPDATED: Added isRatoon to the end of the data array
       await client.query(insertQuery, [
         tenant_id,
         String(row.parcha_no).trim(),
         row.farmer_name || null,
         row.variety_code || 'Tier 2',
         method,
-        isBurnt
+        isBurnt,
+        isRatoon
       ]);
+      
       insertedCount++;
     }
 
