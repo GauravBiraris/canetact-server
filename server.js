@@ -265,12 +265,15 @@ app.get('/api/lots/pending-arrival', verifyToken, requireRole(['gateman', 'admin
   }
 });
 
-// --- REVISED ENDPOINT: LOG GATE ARRIVAL (Touchpoint 2) ---
+// --- ENDPOINT: LOG GATE ARRIVAL (Updated for Multi-Truck Splitting) ---
 app.post('/api/lots/arrive', verifyToken, requireRole(['gateman', 'admin', 'manager']), async (req, res) => {
   const { parcha_no, net_weight, zone } = req.body;
   const tenant_id = req.user.tenant_id;
+  
+  // Ensure parcha is clean and uppercase for consistent matching
+  const cleanParcha = String(parcha_no).trim().toUpperCase();
 
-  if (!parcha_no || !net_weight || !zone) {
+  if (!cleanParcha || !net_weight || !zone) {
     return res.status(400).json({ error: 'Parcha No, Weight, and Zone are required.' });
   }
 
@@ -279,38 +282,83 @@ app.post('/api/lots/arrive', verifyToken, requireRole(['gateman', 'admin', 'mana
   try {
     await client.query('BEGIN');
 
-    // 1. Check current status of the parcha
-    const checkQuery = `SELECT id, gate_arrival_time FROM lots WHERE tenant_id = $1 AND parcha_no = $2`;
-    const checkResult = await client.query(checkQuery, [tenant_id, parcha_no]);
+    // 1. Fetch the BASE parcha record exactly
+    const baseQuery = `SELECT * FROM lots WHERE tenant_id = $1 AND parcha_no = $2`;
+    const baseResult = await client.query(baseQuery, [tenant_id, cleanParcha]);
 
-    if (checkResult.rowCount > 0) {
-      const lot = checkResult.rows[0];
-      
-      // Prevent double-logging
-      if (lot.gate_arrival_time !== null) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: `Parcha ${parcha_no} has already been logged at the gate.` });
+    if (baseResult.rowCount > 0) {
+      const baseLot = baseResult.rows[0];
+
+      // 2. Has the base parcha already arrived?
+      if (baseLot.gate_arrival_time !== null) {
+        // --- SCENARIO A: Second/Third Truck Arrival (Clone and Suffix) ---
+        
+        // Count existing trucks for this base parcha. 
+        // We look for the exact base '45821' OR any suffixes like '45821-%'
+        const countQuery = `
+          SELECT COUNT(*) FROM lots 
+          WHERE tenant_id = $1 
+          AND (parcha_no = $2 OR parcha_no LIKE $3)
+        `;
+        const countResult = await client.query(countQuery, [tenant_id, cleanParcha, `${cleanParcha}-%`]);
+        
+        // If 1 truck exists, the next one is truck #2
+        const truckNumber = parseInt(countResult.rows[0].count) + 1; 
+        const newParchaNo = `${cleanParcha}-${truckNumber}`;
+
+        // Insert the cloned row with the new weight, zone, and current time, carrying over the field data
+        const insertCloneQuery = `
+          INSERT INTO lots (
+            tenant_id, parcha_no, farmer_name, variety_code, is_ratoon, 
+            harvest_method, burn_status, cut_start_time, 
+            gate_arrival_time, net_weight, zone
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, $9, $10)
+          RETURNING id, parcha_no;
+        `;
+        const clonedResult = await client.query(insertCloneQuery, [
+          tenant_id, newParchaNo, baseLot.farmer_name, baseLot.variety_code, 
+          baseLot.is_ratoon, baseLot.harvest_method, baseLot.burn_status, 
+          baseLot.cut_start_time, net_weight, zone
+        ]);
+
+        await client.query('COMMIT');
+        return res.status(201).json({ 
+          message: `Arrival logged as Truck #${truckNumber} (${newParchaNo})`, 
+          lot: clonedResult.rows[0] 
+        });
+
+      } else {
+        // --- SCENARIO B: First Truck Arrival (Base parcha exists but hasn't arrived) ---
+        const updateQuery = `
+          UPDATE lots 
+          SET gate_arrival_time = CURRENT_TIMESTAMP, net_weight = $1, zone = $2
+          WHERE id = $3 
+          RETURNING id, parcha_no;
+        `;
+        const updateResult = await client.query(updateQuery, [net_weight, zone, baseLot.id]);
+        
+        await client.query('COMMIT');
+        return res.status(200).json({ 
+          message: `Arrival logged for ${cleanParcha}`, 
+          lot: updateResult.rows[0] 
+        });
       }
 
-      // Update existing record
-      const updateQuery = `
-        UPDATE lots SET gate_arrival_time = CURRENT_TIMESTAMP, net_weight = $1, zone = $2
-        WHERE id = $3 RETURNING id, parcha_no;
-      `;
-      await client.query(updateQuery, [net_weight, zone, lot.id]);
-      await client.query('COMMIT');
-      return res.status(200).json({ message: 'Arrival logged successfully' });
-
     } else {
-      // 2. Fallback: Parcha not in DB at all (No CSV, No Field Log yet).
-      // We log it anyway (stub) because the truck is physically at the gate.
-      const insertQuery = `
+      // --- SCENARIO C: Stub Creation (Parcha not in DB at all) ---
+      const insertStubQuery = `
         INSERT INTO lots (tenant_id, parcha_no, gate_arrival_time, net_weight, zone)
-        VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4) RETURNING id, parcha_no;
+        VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4) 
+        RETURNING id, parcha_no;
       `;
-      await client.query(insertQuery, [tenant_id, parcha_no, net_weight, zone]);
+      const stubResult = await client.query(insertStubQuery, [tenant_id, cleanParcha, net_weight, zone]);
+      
       await client.query('COMMIT');
-      return res.status(201).json({ message: 'Arrival logged (Field data pending)' });
+      return res.status(201).json({ 
+        message: 'Arrival logged (Field data pending)', 
+        lot: stubResult.rows[0] 
+      });
     }
 
   } catch (error) {
