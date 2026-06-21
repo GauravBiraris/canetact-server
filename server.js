@@ -403,9 +403,29 @@ app.post('/api/lots/crush', verifyToken, requireRole(['manager', 'admin']), asyn
   }
 });
 
-// --- ADMIN: UPDATE TENANT SETTINGS ---
+// --- ADMIN: GET TENANT SETTINGS ---
+app.get('/api/tenants/settings', verifyToken, requireRole(['admin']), async (req, res) => {
+  const tenant_id = req.user.tenant_id;
+  const client = await pool.connect();
+  
+  try {
+    const query = `
+      SELECT name, address, lat, lng, identifier_label, default_language 
+      FROM tenants 
+      WHERE id = $1
+    `;
+    const result = await client.query(query, [tenant_id]);
+    res.status(200).json(result.rows[0] || {});
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch settings' });
+  } finally {
+    client.release();
+  }
+});
+
+// --- ADMIN: UPDATE TENANT SETTINGS (UPDATED) ---
 app.put('/api/tenants/settings', verifyToken, requireRole(['admin']), async (req, res) => {
-  const { name, address, lat, lng } = req.body;
+  const { name, address, lat, lng, identifier_label, default_language } = req.body;
   const tenant_id = req.user.tenant_id;
   const client = await pool.connect();
 
@@ -415,10 +435,15 @@ app.put('/api/tenants/settings', verifyToken, requireRole(['admin']), async (req
       SET name = COALESCE($1, name), 
           address = COALESCE($2, address), 
           lat = COALESCE($3, lat), 
-          lng = COALESCE($4, lng)
-      WHERE id = $5 RETURNING *;
+          lng = COALESCE($4, lng),
+          identifier_label = COALESCE($5, identifier_label),
+          default_language = COALESCE($6, default_language)
+      WHERE id = $7 RETURNING *;
     `;
-    const result = await client.query(updateQuery, [name, address, lat, lng, tenant_id]);
+    const result = await client.query(updateQuery, [
+      name, address, lat, lng, identifier_label, default_language, tenant_id
+    ]);
+    
     res.status(200).json({ message: 'Settings updated', tenant: result.rows[0] });
   } catch (error) {
     console.error('Tenant Update Error:', error);
