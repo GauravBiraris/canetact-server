@@ -1,5 +1,3 @@
-// cutclock-backend/utils/diCalculator.js
-
 // A simplified mapping of varieties to their baseline deterioration factors
 const getVarietyFactor = (varietyCode) => {
   const code = varietyCode.toUpperCase();
@@ -17,11 +15,23 @@ const getVarietyFactor = (varietyCode) => {
  * @param {Array} weatherLogs - Array of hourly temperature records since cut_time
  */
 const calculateDI = (lot, weatherLogs) => {
-  // If we don't have a cut time yet, DI is effectively 0 (or unknown)
-  if (!lot.cut_start_time) return 0;
+  // --- GAP 1 FIX: The 6:00 AM Fallback ---
+  // We no longer immediately return 0 if cut_start_time is missing.
+  let activeStartTime = lot.cut_start_time;
+  
+  if (!activeStartTime) {
+    // If no field log exists, assume it was cut at 6:00 AM on the day the CSV was uploaded
+    const fallbackDate = new Date(lot.created_at || Date.now());
+    fallbackDate.setHours(6, 0, 0, 0); // Set to 6:00 AM local time
+    
+    // If the fallback time is somehow in the future (e.g., CSV uploaded at 5:00 AM), cap it to "now"
+    activeStartTime = fallbackDate > new Date() ? new Date() : fallbackDate;
+  }
 
-// 1. Calculate EXACT hours elapsed
-  const hoursElapsed = (new Date() - new Date(lot.cut_start_time)) / (1000 * 60 * 60);
+  // 1. Calculate EXACT hours elapsed using the active start time
+  const hoursElapsed = (new Date() - new Date(activeStartTime)) / (1000 * 60 * 60);
+  
+  // Safety check: if time is mathematically negative or zero, DI is 0
   if (hoursElapsed <= 0) return 0;
 
   let t_thermal = 0;
@@ -42,14 +52,20 @@ const calculateDI = (lot, weatherLogs) => {
     t_thermal = averageThermalRate * hoursElapsed;
   }
 
-  // 2. Apply Factors
+  // 4. Apply Base Factors
   const harvest_factor = lot.harvest_method?.toLowerCase() === 'mechanical' ? 1.9 : 1.0;
   const burn_factor = lot.burn_status === true ? 1.4 : 1.0;
-  const variety_factor = getVarietyFactor(lot.variety_code || '');
+  let variety_factor = getVarietyFactor(lot.variety_code || '');
   
+  // --- GAP 3 FIX: The Ratoon Penalty ---
+  // If the lot is marked as a ratoon crop, add the 0.15 penalty to its base variety factor
+  if (lot.is_ratoon) {
+    variety_factor += 0.15;
+  }
+
   // Note: Skipping rain_factor for MVP simplicity unless you want it hardcoded
 
-  // 3. Final DI Calculation
+  // 5. Final DI Calculation
   const rawDI = t_thermal * harvest_factor * burn_factor * variety_factor;
   
   // Normalize or cap if desired, returning 2 decimal places
