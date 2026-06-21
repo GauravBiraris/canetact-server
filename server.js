@@ -652,13 +652,14 @@ app.get('/api/exports/leaderboard', verifyToken, requireRole(['admin', 'manager'
   }
 });
 
-// --- ENDPOINT: GET TENANT PROFILE (For UI feature flagging) ---
+// --- ENDPOINT: GET TENANT PROFILE ---
 app.get('/api/tenants/profile', verifyToken, async (req, res) => {
   const tenant_id = req.user.tenant_id;
   const client = await pool.connect();
   
   try {
-    const query = 'SELECT name, subscription_tier FROM tenants WHERE id = $1';
+    // Added identifier_label and default_language to the SELECT statement
+    const query = 'SELECT name, subscription_tier, identifier_label, default_language FROM tenants WHERE id = $1';
     const result = await client.query(query, [tenant_id]);
     
     if (result.rowCount === 0) return res.status(404).json({ error: 'Tenant not found' });
