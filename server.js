@@ -21,6 +21,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Middleware for internal App Team operations
+const verifySuperAdmin = (req, res, next) => {
+  const apiKey = req.headers['x-api-key'];
+  if (!apiKey || apiKey !== process.env.SUPER_ADMIN_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid API Key' });
+  }
+  next();
+};
+
 // Set up multer to keep uploaded files in memory
 const upload = multer({ storage: multer.memoryStorage() });
 
