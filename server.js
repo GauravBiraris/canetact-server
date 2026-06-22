@@ -1,6 +1,6 @@
 require('dotenv').config();
 const express = require('express');
-const stream = require('stream');
+const cors = require('cors');
 const pool = require('./db');
 const { auth } = require('./firebase');
 const { verifyToken, requireRole, requireActiveTenant } = require('./middleware/authMiddleware');
@@ -115,7 +115,8 @@ app.post('/api/tenants/register', verifySuperAdmin, async (req, res) => {
     // 3. Set Custom Claims in Firebase (Crucial for RBAC)
     await auth.setCustomUserClaims(firebaseUid, { 
       tenant_id: tenant_id, 
-      role: 'admin' 
+      role: 'admin',
+      tenant_status: 'active'
     });
 
     // 4. Insert the Admin User into Neon
