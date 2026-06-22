@@ -86,9 +86,14 @@ app.post('/api/lots/upload', verifyToken, requireRole(['admin', 'manager']), asy
 });
 
 // --- ENDPOINT: REGISTER NEW TENANT & ADMIN ---
-// This is a public or securely-keyed route for SaaS onboarding
 app.post('/api/tenants/register', verifySuperAdmin, async (req, res) => {
-  const { tenantName, lat, lng, adminEmail, adminPassword, adminName } = req.body;
+  // Destructure using the exact keys sent by the PowerShell/Postman payload
+  const { tenant_name, lat, lng, admin_email, admin_password, admin_name } = req.body;
+
+  // Optional but recommended: Validate required fields before hitting the database
+  if (!tenant_name || !admin_email || !admin_password) {
+    return res.status(400).json({ error: 'Missing required fields: tenant_name, admin_email, or admin_password' });
+  }
 
   let firebaseUid = null;
   const client = await pool.connect();
@@ -101,14 +106,14 @@ app.post('/api/tenants/register', verifySuperAdmin, async (req, res) => {
       INSERT INTO tenants (name, lat, lng)
       VALUES ($1, $2, $3) RETURNING id;
     `;
-    const tenantResult = await client.query(tenantQuery, [tenantName, lat, lng]);
+    const tenantResult = await client.query(tenantQuery, [tenant_name, lat, lng]);
     const tenant_id = tenantResult.rows[0].id;
 
     // 2. Create the Admin User in Firebase
     const userRecord = await auth.createUser({
-      email: adminEmail,
-      password: adminPassword,
-      displayName: adminName,
+      email: admin_email,
+      password: admin_password,
+      displayName: admin_name,
     });
     firebaseUid = userRecord.uid;
 
@@ -124,7 +129,7 @@ app.post('/api/tenants/register', verifySuperAdmin, async (req, res) => {
       INSERT INTO users (firebase_uid, tenant_id, role, name)
       VALUES ($1, $2, $3, $4) RETURNING *;
     `;
-    await client.query(userQuery, [firebaseUid, tenant_id, 'admin', adminName]);
+    await client.query(userQuery, [firebaseUid, tenant_id, 'admin', admin_name]);
 
     await client.query('COMMIT');
     
