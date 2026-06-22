@@ -123,7 +123,7 @@ app.post('/api/lots/upload', verifyToken, requireRole(['admin', 'manager']), asy
 
 // --- ENDPOINT: REGISTER NEW TENANT & ADMIN ---
 // This is a public or securely-keyed route for SaaS onboarding
-app.post('/api/tenants/register', async (req, res) => {
+app.post('/api/tenants/register', verifySuperAdmin, async (req, res) => {
   const { tenantName, lat, lng, adminEmail, adminPassword, adminName } = req.body;
 
   let firebaseUid = null;
@@ -188,6 +188,22 @@ app.post('/api/tenants/register', async (req, res) => {
   }
 });
 
+// --- ENDPOINT: TOGGLE TENANT SUBSCRIPTION STATUS (App Team Only) ---
+app.patch('/api/tenants/:id/status', verifySuperAdmin, async (req, res) => {
+  const { status } = req.body; // e.g., 'active' or 'paused'
+  const tenant_id = req.params.id;
+  const client = await pool.connect();
+
+  try {
+    const query = `UPDATE tenants SET subscription_status = $1 WHERE id = $2 RETURNING *`;
+    const result = await client.query(query, [status, tenant_id]);
+    res.status(200).json({ message: `Tenant status changed to ${status}` });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update tenant status' });
+  } finally {
+    client.release();
+  }
+});
 // --- ENDPOINT: SYNC OFFLINE CUT LOGS (Field User) ---
 app.post('/api/lots/sync', verifyToken, requireRole(['field_user', 'admin', 'manager']), async (req, res) => {
   const { logs } = req.body;
