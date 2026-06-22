@@ -574,6 +574,49 @@ app.post('/api/users', verifyToken, requireRole(['admin']), async (req, res) => 
   }
 });
 
+// --- ENDPOINT: TOGGLE TENANT STATUS (Super Admin Only) ---
+app.patch('/api/tenants/:id/status', verifySuperAdmin, async (req, res) => {
+  const { status } = req.body; // 'active' or 'paused'
+  const tenant_id = req.params.id;
+  const client = await pool.connect();
+  
+  try {
+    // 1. Update the PostgreSQL database
+    await client.query('UPDATE tenants SET subscription_status = $1 WHERE id = $2', [status, tenant_id]);
+
+    // 2. Fetch all users belonging to this tenant
+    const usersResult = await client.query('SELECT firebase_uid, role FROM users WHERE tenant_id = $1', [tenant_id]);
+    
+    // 3. Update Firebase Claims for every user
+    const updatePromises = usersResult.rows.map(async (user) => {
+      // Re-apply their tenant_id and role, but overwrite the status
+      await auth.setCustomUserClaims(user.firebase_uid, {
+        tenant_id: tenant_id,
+        role: user.role,
+        tenant_status: status
+      });
+
+      // 4. Force immediate logout! 
+      // If paused, revoke their current active session so they can't keep using the app
+      if (status === 'paused') {
+        await auth.revokeRefreshTokens(user.firebase_uid);
+      }
+    });
+
+    await Promise.all(updatePromises);
+
+    res.status(200).json({ 
+      message: `Tenant ${tenant_id} changed to ${status}. ${usersResult.rowCount} users updated.` 
+    });
+
+  } catch (error) {
+    console.error('Pause Error:', error);
+    res.status(500).json({ error: 'Failed to update tenant status across DB and Firebase' });
+  } finally {
+    client.release();
+  }
+});
+
 // --- ADMIN: DELETE USER ---
 app.delete('/api/users/:uid', verifyToken, requireRole(['admin']), async (req, res) => {
   const targetUid = req.params.uid;
