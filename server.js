@@ -153,6 +153,34 @@ app.post('/api/tenants/register', verifySuperAdmin, async (req, res) => {
   }
 });
 
+// --- ENDPOINT: DELETE TENANT (Super Admin Only) ---
+app.delete('/api/tenants/:id', verifySuperAdmin, async (req, res) => {
+  const tenant_id = req.params.id;
+  const client = await pool.connect();
+  
+  try {
+    // 1. Fetch all users for this tenant to delete from Firebase
+    const usersResult = await client.query('SELECT firebase_uid FROM users WHERE tenant_id = $1', [tenant_id]);
+    
+    // 2. Delete users from Firebase Auth
+    const deletePromises = usersResult.rows.map(user => auth.deleteUser(user.firebase_uid));
+    await Promise.all(deletePromises);
+
+    // 3. Delete from PostgreSQL (Lots and Users will cascade if you set up foreign keys, 
+    // otherwise delete them manually first)
+    await client.query('DELETE FROM lots WHERE tenant_id = $1', [tenant_id]);
+    await client.query('DELETE FROM users WHERE tenant_id = $1', [tenant_id]);
+    await client.query('DELETE FROM tenants WHERE id = $1', [tenant_id]);
+
+    res.status(200).json({ message: `Tenant ${tenant_id} and all associated data permanently deleted.` });
+  } catch (error) {
+    console.error('Delete Tenant Error:', error);
+    res.status(500).json({ error: 'Failed to completely delete tenant' });
+  } finally {
+    client.release();
+  }
+});
+
 // --- ENDPOINT: SYNC OFFLINE CUT LOGS (Field User) ---
 app.post('/api/lots/sync', verifyToken, requireRole(['field_user', 'admin', 'manager']), async (req, res) => {
   const { logs } = req.body;
