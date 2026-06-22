@@ -28,4 +28,15 @@ const requireRole = (allowedRoles) => {
   };
 };
 
-module.exports = { verifyToken, requireRole };
+const requireActiveTenant = (req, res, next) => {
+  // We read the status directly from the Firebase token in memory
+  if (req.user.tenant_status === 'paused') {
+    return res.status(403).json({ 
+      error: 'Account Suspended', 
+      message: 'Your mill\'s subscription is currently inactive. Please contact CutClock support.' 
+    });
+  }
+  next();
+};
+
+module.exports = { verifyToken, requireRole, requireActiveTenant };
