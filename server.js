@@ -1,12 +1,9 @@
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
-const multer = require('multer');
-const csv = require('csv-parser');
 const stream = require('stream');
 const pool = require('./db');
 const { auth } = require('./firebase');
-const { verifyToken, requireRole } = require('./middleware/authMiddleware');
+const { verifyToken, requireRole, requireActiveTenant } = require('./middleware/authMiddleware');
 const { startWeatherCron, startCleanupCron } = require('./services/weatherService');
 const { calculateDI } = require('./utils/diCalculator');
 const QueryStream = require('pg-query-stream');
@@ -29,39 +26,6 @@ const verifySuperAdmin = (req, res, next) => {
   }
   next();
 };
-
-// Set up multer to keep uploaded files in memory
-const upload = multer({ storage: multer.memoryStorage() });
-
-// --- ENDPOINT: CREATE USER (Admin Only) ---
-app.post('/api/users', verifyToken, requireRole(['admin']), async (req, res) => {
-  const { email, password, name, role } = req.body;
-  const tenant_id = req.user.tenant_id; // Inherited from the admin creating the user
-
-  try {
-    // 1. Create user in Firebase
-    const userRecord = await auth.createUser({
-      email,
-      password,
-      displayName: name,
-    });
-
-    // 2. Set Custom Claims in Firebase (this powers the RBAC and Multi-tenancy)
-    await auth.setCustomUserClaims(userRecord.uid, { tenant_id, role });
-
-    // 3. Insert user into Neon DB
-    const query = `
-      INSERT INTO users (firebase_uid, tenant_id, role, name)
-      VALUES ($1, $2, $3, $4) RETURNING *;
-    `;
-    const result = await pool.query(query, [userRecord.uid, tenant_id, role, name]);
-
-    res.status(201).json({ message: 'User created successfully', user: result.rows[0] });
-  } catch (error) {
-    console.error('Error creating user:', error);
-    res.status(500).json({ error: 'Failed to create user' });
-  }
-});
 
  
 // --- ENDPOINT: BULK UPLOAD PARCHAS (Accepts Clean JSON array) ---
@@ -204,6 +168,7 @@ app.patch('/api/tenants/:id/status', verifySuperAdmin, async (req, res) => {
     client.release();
   }
 });
+
 // --- ENDPOINT: SYNC OFFLINE CUT LOGS (Field User) ---
 app.post('/api/lots/sync', verifyToken, requireRole(['field_user', 'admin', 'manager']), async (req, res) => {
   const { logs } = req.body;
@@ -214,13 +179,16 @@ app.post('/api/lots/sync', verifyToken, requireRole(['field_user', 'admin', 'man
   }
 
   const client = await pool.connect();
-  const syncedIds = []; // Keep track of local Dexie IDs that succeeded
+  const syncedIds = [];
 
   try {
     await client.query('BEGIN');
 
+    // MOVED OUTSIDE THE LOOP: Fetch user defaults exactly once
+    const userQuery = await client.query('SELECT default_harvest_method, default_burn_status FROM users WHERE firebase_uid = $1', [req.user.uid]);
+    const defaults = userQuery.rows[0] || { default_harvest_method: 'manual', default_burn_status: false };
+
     for (const log of logs) {
-      // 1. Try to update an existing parcha record
       const updateQuery = `
         UPDATE lots
         SET cut_start_time = $1
@@ -229,13 +197,9 @@ app.post('/api/lots/sync', verifyToken, requireRole(['field_user', 'admin', 'man
       `;
       const updateRes = await client.query(updateQuery, [log.cut_time, tenant_id, log.parcha_no]);
 
-      const userQuery = await client.query('SELECT default_harvest_method, default_burn_status FROM users WHERE firebase_uid = $1', [req.user.uid]);
-    const defaults = userQuery.rows[0] || { default_harvest_method: 'manual', default_burn_status: false };
-
       if (updateRes.rowCount > 0) {
         syncedIds.push(log.id); 
       } else {
-        // Apply the defaults when creating the stub
         const insertQuery = `
           INSERT INTO lots (tenant_id, parcha_no, cut_start_time, harvest_method, burn_status)
           VALUES ($1, $2, $3, $4, $5)
@@ -253,7 +217,6 @@ app.post('/api/lots/sync', verifyToken, requireRole(['field_user', 'admin', 'man
     }
 
     await client.query('COMMIT');
-    // Return the local IDs back to the app so it can clear them from Dexie
     res.status(200).json({ syncedIds }); 
 
   } catch (error) {
@@ -291,7 +254,7 @@ app.get('/api/lots/pending-arrival', verifyToken, requireRole(['gateman', 'admin
 });
 
 // --- ENDPOINT: LOG GATE ARRIVAL (Updated for Multi-Truck Splitting) ---
-app.post('/api/lots/arrive', verifyToken, requireRole(['gateman', 'admin', 'manager']), async (req, res) => {
+app.post('/api/lots/arrive', verifyToken, requireActiveTenant, requireRole(['gateman', 'admin', 'manager']), async (req, res) => {
   const { parcha_no, net_weight, zone } = req.body;
   const tenant_id = req.user.tenant_id;
   
@@ -396,7 +359,7 @@ app.post('/api/lots/arrive', verifyToken, requireRole(['gateman', 'admin', 'mana
 });
 
 // --- ENDPOINT: GET YARD QUEUE (Dashboard Touchpoint 3) ---
-app.get('/api/lots/queue', verifyToken, requireRole(['manager', 'admin']), async (req, res) => {
+app.get('/api/lots/queue', verifyToken, requireActiveTenant, requireRole(['manager', 'admin']), async (req, res) => {
   const tenant_id = req.user.tenant_id;
   const client = await pool.connect();
 
