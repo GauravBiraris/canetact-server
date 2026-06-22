@@ -555,7 +555,11 @@ app.post('/api/users', verifyToken, requireRole(['admin']), async (req, res) => 
   
   try {
     const userRecord = await auth.createUser({ email, password, displayName: name });
-    await auth.setCustomUserClaims(userRecord.uid, { tenant_id, role });
+    await auth.setCustomUserClaims(userRecord.uid, { 
+      tenant_id, 
+      role,
+      tenant_status: 'active' // Inject the default active status
+    });
 
     const query = `
       INSERT INTO users (firebase_uid, tenant_id, role, name, default_harvest_method, default_burn_status)
